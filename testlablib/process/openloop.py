@@ -1,6 +1,5 @@
 import numpy as np
 import testlablib as lab
-from testlablib.library.library import library
 import time
 
 
