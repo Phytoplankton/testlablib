@@ -1176,6 +1176,7 @@ class _Gas(Serializer):
         self.thermal_conductivity_kW_mK = None
         self.heat_capacity_kJ_kmolK = None
         self.diffusivity_m2_s = None
+        self.fugacity_coefficient = None
 
     def add_info(self, key, value):
         self.info[key] = value
@@ -1216,6 +1217,9 @@ class _Gas(Serializer):
     def load_diffusivity_m2_s(self, function):
         self.diffusivity_m2_s = function
 
+    def load_fugacity_coefficient(self, function):
+        self.fugacity_coefficient = function
+
     # --------------------------------------------------------------------------------------------
 
     def set_gas_temp_K(self, value):
@@ -1236,13 +1240,15 @@ class _Gas(Serializer):
         return self.pressure_bara
 
     def get_gas_molarity_kmol_m3(self):
-        return self.pressure_bara / (0.08314 * self.get_gas_temp_K())
+        c = 0
+        for id in self.specie.keys():
+            c = c + self.get_specie_molarity_kmol_m3(id=id)
+        return c
 
     def get_gas_density_kg_m3(self):
-        c = self.get_gas_molarity_kmol_m3()
         rho = 0
         for id in self.specie.keys():
-            rho = rho + self.specie[id]["Molar Fraction"] * c * self.specie[id]["Molar Mass [kg/kmol]"]
+            rho = rho + self.get_specie_molarity_kmol_m3(id=id) * self.specie[id]["Molar Mass [kg/kmol]"]
         return rho
 
     def get_gas_heat_capacity_kJ_kmolK(self):
@@ -1266,10 +1272,16 @@ class _Gas(Serializer):
         return self.specie[id]["Molar Fraction"]
 
     def get_specie_pressure_bara(self, id):
-        return self.specie[id]["Molar Fraction"] * self.get_gas_pressure_bara()
+        return self.get_specie_molar_fraction(id=id) * self.get_gas_pressure_bara()
+
+    def get_specie_fugacity_bara(self, id):
+        return self.get_specie_molar_fraction(id=id) * self.get_gas_pressure_bara() * self.get_specie_fugacity_coefficient(id=id)
 
     def get_specie_molarity_kmol_m3(self, id):
-        return self.get_specie_molar_fraction(id=id) * self.molarity_kmol_m3
+        return self.get_specie_fugacity_bara(id=id) / (self.R * self.get_gas_temp_K())
+
+    def get_specie_fugacity_coefficient(self, id):
+        return self.fugacity_coefficient(self, id)
 
     def get_specie_heat_capacity_kJ_kmolK(self, id):
         return self.heat_capacity_kJ_kmolK(self, id)
