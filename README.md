@@ -14,7 +14,7 @@ def  codeblock():
     return None
 ```
 
-$ \sum_{i=1}^{n} X_i $
+$\sum_{i=1}^{n} X_i$
 
 *Cursive*  
 **Bold**  
