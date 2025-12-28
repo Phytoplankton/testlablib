@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from copy import deepcopy
 import pickle
@@ -1176,7 +1177,6 @@ class _Gas(Serializer):
         self.thermal_conductivity_kW_mK = None
         self.heat_capacity_kJ_kmolK = None
         self.diffusivity_m2_s = None
-        self.fugacity_coefficient = None
 
     def add_info(self, key, value):
         self.info[key] = value
@@ -1217,9 +1217,6 @@ class _Gas(Serializer):
     def load_diffusivity_m2_s(self, function):
         self.diffusivity_m2_s = function
 
-    def load_fugacity_coefficient(self, function):
-        self.fugacity_coefficient = function
-
     # --------------------------------------------------------------------------------------------
 
     def set_gas_temp_K(self, value):
@@ -1240,15 +1237,13 @@ class _Gas(Serializer):
         return self.pressure_bara
 
     def get_gas_molarity_kmol_m3(self):
-        c = 0
-        for id in self.specie.keys():
-            c = c + self.get_specie_molarity_kmol_m3(id=id)
-        return c
+        return self.pressure_bara / (0.08314 * self.get_gas_temp_K())
 
     def get_gas_density_kg_m3(self):
+        c = self.get_gas_molarity_kmol_m3()
         rho = 0
         for id in self.specie.keys():
-            rho = rho + self.get_specie_molarity_kmol_m3(id=id) * self.specie[id]["Molar Mass [kg/kmol]"]
+            rho = rho + self.specie[id]["Molar Fraction"] * c * self.specie[id]["Molar Mass [kg/kmol]"]
         return rho
 
     def get_gas_heat_capacity_kJ_kmolK(self):
@@ -1272,16 +1267,10 @@ class _Gas(Serializer):
         return self.specie[id]["Molar Fraction"]
 
     def get_specie_pressure_bara(self, id):
-        return self.get_specie_molar_fraction(id=id) * self.get_gas_pressure_bara()
-
-    def get_specie_fugacity_bara(self, id):
-        return self.get_specie_molar_fraction(id=id) * self.get_gas_pressure_bara() * self.get_specie_fugacity_coefficient(id=id)
+        return self.specie[id]["Molar Fraction"] * self.get_gas_pressure_bara()
 
     def get_specie_molarity_kmol_m3(self, id):
-        return self.get_specie_fugacity_bara(id=id) / (self.R * self.get_gas_temp_K())
-
-    def get_specie_fugacity_coefficient(self, id):
-        return self.fugacity_coefficient(self, id)
+        return self.get_specie_molar_fraction(id=id) * self.molarity_kmol_m3
 
     def get_specie_heat_capacity_kJ_kmolK(self, id):
         return self.heat_capacity_kJ_kmolK(self, id)
@@ -1584,10 +1573,8 @@ class GasEquilibrium_Isothermal_Isobaric(_Stochiometry, Serializer, _GasEquilibr
             dfdr = np.einsum("src,cq->srq", dfdw, self.matrix["R"])
 
             # Newton's Method
-            try:
-                dr_newton = - np.linalg.solve(dfdr, f)
-            except:
-                dr_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdr), f)
+            #dr_newton = - np.linalg.solve(dfdr, f)
+            dr_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdr), f)
 
             dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
 
@@ -1714,7 +1701,9 @@ class GasEquilibrium_Adiabatic_Isobaric(_Stochiometry, Serializer, _GasEquilibri
             dfdT = np.concatenate((dfdT_rxn_insta, dfdT_energy_balance), axis=1)
 
             dfdX = np.concatenate((dfdr, dfdT), axis=2)
-            dX_newton = - np.linalg.solve(dfdX, f)
+            #dX_newton = - np.linalg.solve(dfdX, f)
+            dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
             dr_newton = dX_newton[:, :self.GasStreamOut.num_of_rxn_insta:]
             dT_newton = dX_newton[:, self.GasStreamOut.num_of_rxn_insta]
             dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
@@ -2072,18 +2061,14 @@ class GasPFR_Adiabatic_Isobaric(_Stochiometry, Serializer, _GasEquilibrium, _Str
         return self.GasStreamOut
 
 
-
 # ---------------------------------------------------------------------------------------
 
 
 class _Liquid(Serializer):
 
-    def __init__(self, stream_id, solvent_id):
+    def __init__(self, solvent_id):
 
         super().__init__()
-
-        # Unique Solvent Identification
-        self.id = stream_id
 
         # Solvent (E.g. H2O) when calulating molality
         self.solvent_id = solvent_id
@@ -2528,8 +2513,8 @@ class _Liquid(Serializer):
 
 class LiquidStream(_Liquid):
 
-    def __init__(self, stream_id, solvent_id):
-        super().__init__(stream_id, solvent_id)
+    def __init__(self, solvent_id):
+        super().__init__(solvent_id)
         self.flow_kg_h = None
 
     def set_solution_flow_kg_h(self, value):
@@ -2617,10 +2602,7 @@ class LiquidEquilibrium_Isothermal(_Stochiometry, Serializer, _LiquidEquilibrium
             dfdr = np.einsum("src,cq->srq", dfdw, self.matrix["R"])
 
             # Newton's Method
-            try:
-                dr_newton = - np.linalg.solve(dfdr, f)
-            except:
-                dr_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdr), f)
+            dr_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdr), f)
 
             dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
 
@@ -2748,7 +2730,11 @@ class LiquidEquilibrium_Adiabatic(_Stochiometry, Serializer, _LiquidEquilibrium)
             dfdT = np.concatenate((dfdT_rxn_insta, dfdT_energy_balance), axis=1)
 
             dfdX = np.concatenate((dfdr, dfdT), axis=2)
-            dX_newton = - np.linalg.solve(dfdX, f)
+
+
+            dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
+
             dr_newton = dX_newton[:, :self.LiquidStreamOut.num_of_rxn_insta:]
             dT_newton = dX_newton[:, self.LiquidStreamOut.num_of_rxn_insta]
             dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
@@ -2971,7 +2957,8 @@ class LiquidEquilibrium_QPFlash(_Stochiometry, Serializer, _LiquidEquilibrium, _
             dfdX = np.concatenate((dfdz, dfdT), axis=2)
 
             # Damped Newton's Method
-            dX_newton = - np.linalg.solve(dfdX, f)
+            dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
             dz_newton = dX_newton[:, 0:dX_newton.shape[1] - 1:]
             dT_newton = dX_newton[:, dX_newton.shape[1] - 1]
             dm_newton = m_in_tot[:,None] * np.einsum("ij,sj->si", self.matrix["R"], dz_newton)
@@ -3233,7 +3220,9 @@ class LiquidEquilibrium_TPFlash(_Stochiometry, Serializer, _LiquidEquilibrium, _
             dfdz = np.concatenate((dfdz_liq, dfdz_vap, dfdz_gas), axis=1)
 
             # Damped Newton's Method
-            dz_newton = - np.linalg.solve(dfdz, f)
+            #dz_newton = - np.linalg.solve(dfdz, f)
+            dz_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdz), f)
+
             dm_newton = m_in_tot[:, None] * np.einsum("ij,sj->si", self.matrix["R"], dz_newton)
             dm = lr * dm_newton
 
@@ -3357,7 +3346,9 @@ class LiquidCSTR_Isothermal(_Stochiometry, Serializer, _LiquidEquilibrium, _Liqu
                     dfdw = np.concatenate((dfdw_rxn_insta, dfdw_rxn_reversible), axis=1)
                     dfdr = np.einsum("src,cq->srq", dfdw, self.matrix["R"])
 
-                dr_newton = - np.linalg.solve(dfdr, f)
+                #dr_newton = - np.linalg.solve(dfdr, f)
+                dr_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdr), f)
+
                 dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
 
                 # Reducing Step Size (Slightly)
@@ -3512,7 +3503,9 @@ class LiquidCSTR_Adiabatic(_Stochiometry, Serializer, _LiquidEquilibrium, _Liqui
                     dfdX = np.concatenate((dfdr, dfdT), axis=2)
 
                 # Newton's Method
-                dX_newton = - np.linalg.solve(dfdX, f)
+                #dX_newton = - np.linalg.solve(dfdX, f)
+                dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
                 dr_newton = dX_newton[:, :self.LiquidStreamOut.num_of_rxn_insta + self.LiquidStreamOut.num_of_rxn_reversible:]
                 dT_newton = dX_newton[:, self.LiquidStreamOut.num_of_rxn_insta + self.LiquidStreamOut.num_of_rxn_reversible]
                 dw_newton = np.einsum("ij,sj->si", self.matrix["R"], dr_newton)
@@ -3771,7 +3764,9 @@ class LiquidCSTR_QPFlash(_Stochiometry, Serializer, _LiquidEquilibrium, _LiquidC
             dfdX = np.concatenate((dfdz, dfdT), axis=2)
 
             # Damped Newton's Method
-            dX_newton = - np.linalg.solve(dfdX, f)
+            #dX_newton = - np.linalg.solve(dfdX, f)
+            dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
             dz_newton = dX_newton[:, 0:dX_newton.shape[1] - 1:]
             dT_newton = dX_newton[:, dX_newton.shape[1] - 1]
             dm_newton = m_in_tot[:, None] * np.einsum("ij,sj->si", self.matrix["R"], dz_newton)
@@ -4183,7 +4178,9 @@ class VaporLiquidEquilibrium_Isothermal(_Stochiometry, Serializer, _LiquidEquili
             dfdz = np.concatenate((dfdz_liq, dfdz_vap, dfdz_gas), axis=1)
 
             # Damped Newton's Method
-            dz_newton = - np.linalg.solve(dfdz, f)
+            #dz_newton = - np.linalg.solve(dfdz, f)
+            dz_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdz), f)
+
             dm_newton = m_in_tot[:,None] * np.einsum("ij,sj->si", self.matrix["R"], dz_newton)
             dm = lr * dm_newton
 
@@ -4367,7 +4364,9 @@ class VaporLiquidEquilibrium_Adiabatic(_Stochiometry, Serializer, _LiquidEquilib
             dfdX = np.concatenate((dfdz, dfdT), axis=2)
 
             # Damped Newton's Method
-            dX_newton = - np.linalg.solve(dfdX, f)
+            #dX_newton = - np.linalg.solve(dfdX, f)
+            dX_newton = - np.einsum("scd,sd->sc", np.linalg.pinv(dfdX), f)
+
             dz_newton = dX_newton[:, 0:dX_newton.shape[1] - 1:]
             dT_newton = dX_newton[:, dX_newton.shape[1] - 1]
             dm_newton = m_in_tot[:,None] * np.einsum("ij,sj->si", self.matrix["R"], dz_newton)
@@ -5052,7 +5051,8 @@ class GasLiquidContactor_PFR_CounterCurrent(_Stochiometry, Serializer, _LiquidEq
             f = self.__get_LiquidEquilibrium_f_rxn_insta_log__(self.LiquidStream, Kw)
             dfdw = self.__get_LiquidEquilibrium_dfdw_rxn_insta_loq__(self.LiquidStream)
             dfdr = np.einsum("zsrc,cq->zsrq", dfdw, self.equilibrium_liquid_inlet.matrix["R"])
-            dr_newton = - np.linalg.solve(dfdr, f)
+            #dr_newton = - np.linalg.solve(dfdr, f)
+            dr_newton = - np.einsum("zscd,zsd->zsc", np.linalg.pinv(dfdr), f)
             dw_newton = np.einsum("ij,zsj->zsi", self.equilibrium_liquid_inlet.matrix["R"], dr_newton)
             dw = self.lr * dw_newton
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -5071,7 +5071,8 @@ class GasLiquidContactor_PFR_CounterCurrent(_Stochiometry, Serializer, _LiquidEq
             dydw = self.GasStream.__dydw__(w)
             dfdw = np.einsum("zsfy,zsyw->zsfw", dfdy, dydw)
             dfdr = np.einsum("zsrc,cq->zsrq", dfdw, self.equilibrium_gas_inlet.matrix["R"])
-            dr_newton = - np.linalg.solve(dfdr, f)
+            #dr_newton = - np.linalg.solve(dfdr, f)
+            dr_newton = - np.einsum("zscd,zsd->zsc", np.linalg.pinv(dfdr), f)
             dw_newton = np.einsum("ij,zsj->zsi", self.equilibrium_gas_inlet.matrix["R"], dr_newton)
             dw = self.lr * dw_newton
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -5381,7 +5382,8 @@ class GasLiquidContactor_PFR_CoCurrent(_Stochiometry, Serializer, _LiquidEquilib
             f = self.__get_LiquidEquilibrium_f_rxn_insta_log__(self.LiquidStream, Kw)
             dfdw = self.__get_LiquidEquilibrium_dfdw_rxn_insta_loq__(self.LiquidStream)
             dfdr = np.einsum("zsrc,cq->zsrq", dfdw, self.equilibrium_liquid_inlet.matrix["R"])
-            dr_newton = - np.linalg.solve(dfdr, f)
+            #dr_newton = - np.linalg.solve(dfdr, f)
+            dr_newton = - np.einsum("zscd,zsd->zsc", np.linalg.pinv(dfdr), f)
             dw_newton = np.einsum("ij,zsj->zsi", self.equilibrium_liquid_inlet.matrix["R"], dr_newton)
             dw = lr * dw_newton
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -5400,7 +5402,8 @@ class GasLiquidContactor_PFR_CoCurrent(_Stochiometry, Serializer, _LiquidEquilib
             dydw = self.GasStream.__dydw__(w)
             dfdw = np.einsum("zsfy,zsyw->zsfw", dfdy, dydw)
             dfdr = np.einsum("zsrc,cq->zsrq", dfdw, self.equilibrium_gas_inlet.matrix["R"])
-            dr_newton = - np.linalg.solve(dfdr, f)
+            #dr_newton = - np.linalg.solve(dfdr, f)
+            dr_newton = - np.einsum("zscd,zsd->zsc", np.linalg.pinv(dfdr), f)
             dw_newton = np.einsum("ij,zsj->zsi", self.equilibrium_gas_inlet.matrix["R"], dr_newton)
             dw = lr * dw_newton
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -5443,6 +5446,7 @@ class GasLiquidContactor_PFR_CoCurrent(_Stochiometry, Serializer, _LiquidEquilib
         del self.LP
 
         return self.GasStreamOut, self.LiquidStreamOut
+
 
 
 # ---------------------------------------------------------------------------------------
@@ -5493,6 +5497,539 @@ class Column_StructuredPacking_CoCurrent(GasLiquidContactor_PFR_CoCurrent):
 
 
 # ---------------------------------------------------------------------------------------
+
+
+class _Recycle_Bin:
+
+
+    class LiquidHeatExchanger_CounterCurrent(_Stochiometry, Serializer, _LiquidEquilibrium, _StreamFunctions):
+
+        def __init__(self, interface_area_m2, volume1_m3=None, volume2_m3=None):
+            self.firstscan = True
+            self.volume1_m3 = 1.8 * 10 ** (-3) * interface_area_m2 if volume1_m3 is None else volume1_m3
+            self.volume2_m3 = 1.8 * 10 ** (-3) * interface_area_m2 if volume2_m3 is None else volume2_m3
+            self.interface_area_m2 = interface_area_m2
+
+        def add_heat_transfer_coefficient_kW_m2K(self, heat_transfer_coefficient_kW_m2K):
+            self._heat_transfer_coefficient_kW_m2K_ = heat_transfer_coefficient_kW_m2K
+
+        def react(self, LiquidStreamIn1, LiquidStreamIn2, lr=0.75, ntu_method=True):
+            if ntu_method:
+                LiquidStreamOut1, LiquidStreamOut2 = self.__react_ntu__(LiquidStreamIn1, LiquidStreamIn2)
+            else:
+                LiquidStreamOut1, LiquidStreamOut2 = self.__react__(LiquidStreamIn1, LiquidStreamIn2, lr=lr)
+            return LiquidStreamOut1, LiquidStreamOut2
+
+        def __react__(self, LiquidStreamIn1, LiquidStreamIn2, lr):
+
+            _, _ = self.__react_ntu__(LiquidStreamIn1, LiquidStreamIn2)
+
+            # Geometry
+
+            self.length1_m = np.ones(shape=self.volume1_m3.shape)  # Assumption
+            self.length2_m = np.ones(shape=self.volume2_m3.shape)  # Assumption
+            self.cross_sectional_area1_m2 = self.volume1_m3 / self.length1_m
+            self.cross_sectional_area2_m2 = self.volume2_m3 / self.length2_m
+            self.dz = 1 / self.num_of_heights
+
+            # Strictly Positive Mass Fractions
+            for id in LiquidStreamIn1.specie.keys():
+                LiquidStreamIn1.specie[id]["Mass Fraction"] = np.maximum(LiquidStreamIn1.specie[id]["Mass Fraction"],
+                                                                         10 ** (-18))
+            LiquidStreamIn1.normalize_mass_fractions()
+
+            for id in LiquidStreamIn2.specie.keys():
+                LiquidStreamIn2.specie[id]["Mass Fraction"] = np.maximum(LiquidStreamIn2.specie[id]["Mass Fraction"],
+                                                                         10 ** (-18))
+            LiquidStreamIn2.normalize_mass_fractions()
+
+            if self.firstscan:
+                self.matrix1 = self.__get_the_matrix__(LiquidStreamIn=LiquidStreamIn1, liq_rxn_insta=True)
+                self.matrix2 = self.__get_the_matrix__(LiquidStreamIn=LiquidStreamIn2, liq_rxn_insta=True)
+
+            self.LiquidStreamIn1 = self.__get_LiquidEquilibrium_reduced__(LiquidStreamIn1, matrix=self.matrix1, lr=lr)
+            self.LiquidStreamIn2 = self.__get_LiquidEquilibrium_reduced__(LiquidStreamIn2, matrix=self.matrix2, lr=lr)
+
+            self.LiquidStream1 = deepcopy(self.LiquidStreamIn1)
+            self.LiquidStream2 = deepcopy(self.LiquidStreamIn2)
+
+            for epoch in range(10):
+
+                # Integrate LiquidStream1 "Upward"
+                self.LiquidStream1 = deepcopy(self.LiquidStreamIn1)
+                for i in range(1, self.num_of_heights):
+                    # Load LiquidStream2 at height = z[i-1]
+                    self.LiquidStream2 = self.__get_slice_from_LiquidProfile__(self.LP2, i - 1, self.LiquidStream2)
+
+                    # Calculate Gradients
+                    dwdz, dTdz = self.__get_gradients_liq1__()
+
+                    # Integrate
+                    # self.LiquidStream1.__mass_fractions_vec2dic__(self.LiquidStream1.__mass_fractions_dic2vec__() + dwdz * dz[:, None])
+                    self.LiquidStream1.temp_K = self.LiquidStream1.temp_K + dTdz * self.dz
+                    # self.LiquidStream1.normalize_mass_fractions()
+
+                    # Update Liquid Profile
+                    self.LP1 = self.__insert_slice_to_LiquidProfile__(self.LP1, i, self.LiquidStream1)
+
+                # Integrate LiquidStream2 "Downward"
+                self.LiquidStream2 = deepcopy(self.LiquidStreamIn2)
+                for i in range(self.num_of_heights - 2, -1, -1):
+                    # Load LiquidStream1 at height = z[i+1]
+                    self.LiquidStream1 = self.__get_slice_from_LiquidProfile__(self.LP1, i + 1, self.LiquidStream1)
+
+                    # Calculate Gradients
+                    dwdz, dTdz = self.__get_gradients_liq2__()
+
+                    # Integrate
+                    # self.LiquidStream2.__mass_fractions_vec2dic__(self.LiquidStream2.__mass_fractions_dic2vec__() + dwdz * dz[:, None])
+                    self.LiquidStream2.temp_K = self.LiquidStream2.temp_K + dTdz * self.dz
+                    # self.LiquidStream2.normalize_mass_fractions()
+
+                    # Update Liquid Profile
+                    self.LP2 = self.__insert_slice_to_LiquidProfile__(self.LP2, i, self.LiquidStream2)
+
+            return self.LiquidStream1, self.LiquidStream2
+
+        def __react_ntu__(self, LiquidStreamIn1, LiquidStreamIn2):
+
+            # self.LP1 = self.__broadcast_to_LiquidProfile__(LiquidStreamIn1, self.num_of_heights)
+            # self.LP2 = self.__broadcast_to_LiquidProfile__(LiquidStreamIn2, self.num_of_heights)
+
+            LiquidStreamOut1 = deepcopy(LiquidStreamIn1)
+            LiquidStreamOut2 = deepcopy(LiquidStreamIn2)
+
+            self.LiquidStream1 = deepcopy(LiquidStreamIn1)
+            self.LiquidStream2 = deepcopy(LiquidStreamIn2)
+
+            for epoch in range(5):
+                cp1 = LiquidStreamIn1.get_solution_heat_capacity_kJ_kgK()
+                cp2 = LiquidStreamIn2.get_solution_heat_capacity_kJ_kgK()
+
+                m1 = LiquidStreamIn1.get_solution_flow_kg_h() / 3600
+                m2 = LiquidStreamIn2.get_solution_flow_kg_h() / 3600
+
+                # "Capacity"
+                C1 = cp1 * m1
+                C2 = cp2 * m2
+                Cmin = np.minimum(C1, C2)
+                Cmax = np.maximum(C1, C2)
+                Cr = Cmin / Cmax
+
+                # Maximum Possible Heat Transferred
+                Qmax = Cmin * (LiquidStreamIn1.temp_K - LiquidStreamIn2.temp_K)
+
+                # Heat Transfer Coefficient
+                # self.LiquidStream1.temp_K = 1.0 * LiquidStreamIn1.temp_K
+                # self.LiquidStream2.temp_K = 1.0 * LiquidStreamOut2.temp_K
+                # kH_left = self._heat_transfer_coefficient_kW_m2K_(self)
+
+                # self.LiquidStream1.temp_K = 1.0 * LiquidStreamOut1.temp_K
+                # self.LiquidStream2.temp_K = 1.0 * LiquidStreamIn2.temp_K
+                # kH_right = self._heat_transfer_coefficient_kW_m2K_(self)
+
+                # Average
+                # kH = (kH_left + kH_right) / 2
+
+                kH = self._heat_transfer_coefficient_kW_m2K_(self)
+
+                # Number of Transfer Units
+                NTU = kH * self.interface_area_m2 / Cmin
+
+                # Actual Heat Transferred
+                effectiveness = (1 - np.exp(-NTU * (1 - Cr))) / (1 - Cr * np.exp(- NTU * (1 - Cr)))
+                Q = effectiveness * Qmax
+
+                # Calculate Outlet Temperatures
+                LiquidStreamOut1.temp_K = LiquidStreamIn1.temp_K - Q / C1
+                LiquidStreamOut2.temp_K = LiquidStreamIn2.temp_K + Q / C2
+                # dT_left = np.abs(LiquidStreamIn1.temp_K - LiquidStreamOut2.temp_K)
+                # dT_right = np.abs(LiquidStreamOut1.temp_K - LiquidStreamIn2.temp_K)
+                # LMTD = (dT_left - dT_right) / (np.log(dT_left) - np.log(dT_right))
+
+            # for i in range(LiquidStreamIn1.temp_K.shape[0]):
+            #    self.LP1.temp_K[:,i] = np.linspace(LiquidStreamIn1.temp_K[i], LiquidStreamOut1.temp_K[i], self.num_of_heights)
+            #    self.LP2.temp_K[:, i] = np.linspace(LiquidStreamOut2.temp_K[i], LiquidStreamIn2.temp_K[i], self.num_of_heights)
+
+            return LiquidStreamOut1, LiquidStreamOut2
+
+        def __get_gradients_liq1__(self):
+            m1 = self.LiquidStream1.get_solution_flow_kg_h() / 3600
+            cp1 = self.LiquidStream1.get_solution_heat_capacity_kJ_kgK()
+            Ae = self.interface_area_m2
+            dT = self.LiquidStream1.get_solution_temp_K() - self.LiquidStream2.get_solution_temp_K()
+            kH = self._heat_transfer_coefficient_kW_m2K_(self)
+            q = -kH * dT
+            Z = 1.0
+            dTdz = (Ae * q) / (m1 * cp1 * Z)
+            dwdz = None
+            return dwdz, dTdz
+
+        def __get_gradients_liq2__(self):
+            m2 = self.LiquidStream2.get_solution_flow_kg_h() / 3600
+            cp2 = self.LiquidStream2.get_solution_heat_capacity_kJ_kgK()
+            Ae = self.interface_area_m2
+            dT = self.LiquidStream1.get_solution_temp_K() - self.LiquidStream2.get_solution_temp_K()
+            kH = self._heat_transfer_coefficient_kW_m2K_(self)
+            q = kH * dT
+            Z = 1.0
+            dTdz = (Ae * q) / (m2 * cp2 * Z)
+            dwdz = None
+            return dwdz, dTdz
+
+        def get_profile_stream1_temp_K(self, sample_index):
+            T = self.LP1.get_solution_temp_K()[:, sample_index]
+            z = np.linspace(0, 1, self.num_of_heights)
+            return T, z
+
+        def get_profile_stream2_temp_K(self, sample_index):
+            T = self.LP2.get_solution_temp_K()[:, sample_index]
+            z = np.linspace(0, 1, self.num_of_heights)
+            return T, z
+
+        def get_profile_stream1_total_vapor_pressure_bara(self):
+            pass
+
+        def get_profile_stream2_total_vapor_pressure_bara(self):
+            pass
+
+        def get_interface_area_m2(self):
+            return self.interface_area_m2
+
+
+    class LiquidCSTR_Batch_DYNAMIC(_Stochiometry, Serializer, _LiquidEquilibrium):
+
+        def __init__(self):
+            self.info = {}
+            self.firstscan = True
+            self.equilibrium_liquid_inlet = LiquidEquilibrium_Adiabatic()
+            self.equilibrium_liquid_outlet = LiquidEquilibrium_Adiabatic()
+
+        def react(self, LiquidBulkInit, step_size_s, terminal_time_s, isothermal=False, lr=0.75):
+
+            # Step Size of Integrator
+            self.step_size_s = step_size_s
+            self.terminal_time_s = terminal_time_s
+
+            # Only Strictly Positive Mass Fractions Allowed
+            for id in LiquidBulkInit.specie.keys():
+                LiquidBulkInit.specie[id]["Mass Fraction"] = np.maximum(LiquidBulkInit.specie[id]["Mass Fraction"],
+                                                                        10 ** (-18))
+            LiquidBulkInit.normalize_mass_fractions()
+
+            # Process Liquid and Gas Inlet Streams
+            self.LiquidBulkInit = self.equilibrium_liquid_inlet.react(LiquidBulkInit, lr=lr)
+
+            if self.firstscan:
+
+                # Extract Molar Masses
+                self.M_liq = np.zeros(shape=(LiquidBulkInit.num_of_species,))
+                for i, id in enumerate(LiquidBulkInit.specie.keys()):
+                    self.M_liq[i] = LiquidBulkInit.get_specie_molar_mass_kg_kmol(id)
+
+                # Matrix or Reaction Stochiometry: Used to Calculate Sensitivity Matrices
+                self.matrix_liq = self.__get_the_matrix__(LiquidStreamIn=LiquidBulkInit, liq_rxn_insta=True)
+
+                # Matrix of Reaction Stochiometry: Used to Calculate Heat of Reactions
+                self.matrix_liq_heat = self.__get_the_matrix__(LiquidStreamIn=LiquidBulkInit,
+                                                               liq_rxn_insta=True,
+                                                               liq_rxn_reversible=True)
+
+                self.firstscan = False
+
+            # Initiate as Inlet
+            self.LiquidBulk = deepcopy(self.LiquidBulkInit)
+            self.LiquidBulk.temp_K = self.LiquidBulkInit.temp_K[None, :]
+            self.LiquidBulk.quantum_kg = self.LiquidBulkInit.quantum_kg[None, :]
+            for id in self.LiquidBulk.specie.keys():
+                self.LiquidBulk.specie[id]["Mass Fraction"] = self.LiquidBulkInit.specie[id]["Mass Fraction"][None, :]
+            for id in self.LiquidBulk.info.keys():
+                self.LiquidBulk.info[id] = self.LiquidBulkInit.info[id][None, :]
+
+            self.LP = deepcopy(self.LiquidBulk)
+            self.t = 0
+            self.LP.time_s = [self.t]
+
+            while self.t < self.terminal_time_s:
+
+                m_liq_tot = self.LiquidBulk.get_solution_quantum_kg()
+                w_liq = self.LiquidBulk.__mass_fractions_dic2vec__()
+                m_liq = w_liq * m_liq_tot[:, :, None]
+                cp_liq = self.LiquidBulk.get_solution_heat_capacity_kJ_kgK()
+                T_liq = self.LiquidBulk.get_solution_temp_K()
+                rho = self.LiquidBulk.get_solution_density_kg_m3()
+                V = m_liq_tot / rho
+
+                # Exothermic Heat [kJ/kmol rxn] of the following reactions
+                # - Liquid Insta Reactions
+                # - Liquid Reversibe Reactions
+                h = np.zeros(shape=(self.LiquidBulk.temp_K.shape[0], self.LiquidBulk.temp_K.shape[1],
+                                    self.LiquidBulk.num_of_rxn_insta + self.LiquidBulk.num_of_rxn_reversible),
+                             dtype=np.float64)
+                for rxn_i, rxn_id in enumerate(self.LiquidBulk.rxn_insta.keys()):
+                    h[:, :, rxn_i] = self.LiquidBulk.get_rxn_insta_exothermic_heat_kJ_kmol(rxn_id)
+                for rxn_i, rxn_id in enumerate(self.LiquidBulk.rxn_reversible.keys()):
+                    h[:, :,
+                    rxn_i + self.LiquidBulk.num_of_rxn_insta] = self.LiquidBulk.get_rxn_reversible_exothermic_heat_kJ_kmol(
+                        rxn_id)
+
+                # Calculate Rate-Reactions in Liquid Phase
+                # [r] = [kmol/m3.s]
+                r_liq = self.LiquidBulk.get_rxn_reversible_rate_kmol_m3s_as_specie_vector()
+
+                # Differential Equations (dm/dz)
+                dw_liq__dt = self.M_liq[None, None, :] * r_liq / rho[:, :, None]  # 1/s = kg/kmol * kmol/m3.s * m3/kg
+
+                # Sensitivity in Liquid Phase (dwdB, dwdT)
+                df1__dw_liq = self.__get_LiquidEquilibrium_dfdw_rxn_insta_loq__(self.LiquidBulk)
+                df2__dw_liq = np.broadcast_to(array=self.matrix_liq["A"][None, None, :, :], shape=(
+                self.LiquidBulk.temp_K.shape[0], self.LiquidBulk.temp_K.shape[1], self.matrix_liq["A"].shape[0],
+                self.matrix_liq["A"].shape[1])).copy()
+                df__dw_liq = np.concatenate((df1__dw_liq, df2__dw_liq), axis=2)
+                H = np.linalg.inv(df__dw_liq)
+                Kw = self.__get_LiquidEquilibrium_Kw__(self.LiquidBulk)
+                dKwdT = self.__get_LiquidEquilibrium_dKwdT__(self.LiquidBulk, Kw)
+                Hr = H[:, :, :, :self.LiquidBulk.num_of_rxn_insta:]
+                dw_liq__db = H[:, :, :, self.LiquidBulk.num_of_rxn_insta::]
+                dw_liq__dT = - np.einsum("zscr,zsr->zsc", Hr, (1 / Kw) * dKwdT)
+
+                # Change in "b-Vector" for Liquid Phase
+                db__dt = np.einsum("bw,zsw->zsb", self.matrix_liq["A"], dw_liq__dt)
+
+                # Iterate Until "Convergence"
+                if isothermal:
+                    dw_liq_at_eq__dt = np.einsum("zswb,zsb->zsw", dw_liq__db, db__dt)
+                    dT_liq__dt = np.zeros(shape=(cp_liq.shape))
+                else:
+                    dw_liq_at_eq__dt = dw_liq__dt
+                    for _ in range(10):
+                        dT_liq__dt = (1 / cp_liq) * np.einsum("zsr,zsr->zs", h,
+                                                              np.einsum("rm,zsm->zsr", self.matrix_liq_heat["R+"],
+                                                                        dw_liq_at_eq__dt))
+                        dw_liq_at_eq__dt = np.einsum("zswb,zsb->zsw", dw_liq__db, db__dt) + np.einsum("zsm,zs->zsm",
+                                                                                                      dw_liq__dT,
+                                                                                                      dT_liq__dt)
+
+                dw_liq__dt = dw_liq_at_eq__dt
+
+                """""""""
+                Now we have obtained following derivatives.
+                1) dm_liq__dz
+                2) dT_liq__dz
+                """""""""
+
+                # Calculate Step Size
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    dt_max_01 = 0.1 * np.min(
+                        np.nan_to_num(w_liq / np.abs(dw_liq__dt), nan=np.inf, posinf=np.inf, neginf=np.inf))
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    dt_max_02 = np.nan_to_num(5 / np.abs(dT_liq__dt), nan=np.inf, posinf=np.inf, neginf=np.inf)[0, 0]
+                dt_max_03 = self.terminal_time_s - self.t
+                dt = np.min(a=[dt_max_01, dt_max_02, dt_max_03, self.step_size_s])
+
+                # Integrate
+                dw_liq = dw_liq__dt * dt
+                dT_liq = dT_liq__dt * dt
+
+                self.LiquidBulk.temp_K = self.LiquidBulk.temp_K + dT_liq
+                self.LiquidBulk.quantum_kg = self.LiquidBulk.quantum_kg + 0
+                self.LiquidBulk.__mass_fractions_vec2dic__(w=w_liq + dw_liq)
+                self.t = self.t + dt
+
+                # Append to Profile
+                self.LP.temp_K = np.vstack((self.LP.temp_K, self.LiquidBulk.temp_K))
+                self.LP.quantum_kg = np.vstack((self.LP.quantum_kg, self.LiquidBulk.quantum_kg))
+                for id in self.LiquidBulk.specie.keys():
+                    self.LP.specie[id]["Mass Fraction"] = np.vstack(
+                        (self.LP.specie[id]["Mass Fraction"], self.LiquidBulk.specie[id]["Mass Fraction"]))
+                for id in self.LiquidBulk.info.keys():
+                    self.LP.info[id] = np.vstack((self.LP.info[id], self.LiquidBulk.info[id]))
+                self.LP.time_s.append(self.t)
+
+            # From List to Numpy Array
+            self.LP.time_s = np.array(self.LP.time_s)
+            self.LiquidBulk = deepcopy(self.LP)
+            del self.LP
+
+            # Return Result
+            self.LiquidBulkOut = deepcopy(LiquidBulkInit)
+            self.LiquidBulkOut.temp_K = self.LiquidBulk.temp_K[-1, :]
+            self.LiquidBulkOut.quantum_kg = self.LiquidBulk.quantum_kg[-1, :]
+            for id in self.LiquidBulkOut.specie.keys():
+                self.LiquidBulkOut.specie[id]["Mass Fraction"] = self.LiquidBulk.specie[id]["Mass Fraction"][-1, :]
+            for id in self.LiquidBulkOut.info.keys():
+                self.LiquidBulkOut.info[id] = self.LiquidBulk.info[id][-1, :]
+
+            return self.LiquidBulkOut
+
+
+    def GasBulkSum(bulks):
+
+        GasBulkOut = deepcopy(bulks[0])
+        GasBulkOut.temp_K = 0
+        GasBulkOut.quantum_kmol = 0
+
+        for bulk in bulks:
+            GasBulkOut.quantum_kmol = GasBulkOut.quantum_kmol + np.abs(bulk.quantum_kmol)
+
+        for id in bulks[0].specie.keys():
+            n = 0
+            for bulk in bulks:
+                n = n + bulk.get_specie_quantum_kmol(id=id)
+            GasBulkOut.specie[id]["Molar Fraction"] = n / GasBulkOut.quantum_kmol
+
+        for bulk in bulks:
+            T = bulk.temp_K
+            r = np.abs(bulk.quantum_kmol) / GasBulkOut.quantum_kmol
+            GasBulkOut.temp_K = GasBulkOut.temp_K + r * T
+
+        GasBulkOut.normalize_molar_fractions()
+        return GasBulkOut
+
+
+    class GasBulk(_Gas):
+
+        def __init__(self):
+            super().__init__()
+            self.quantum_kmol = None
+
+        def set_gas_quantum_kmol(self, value):
+            self.amount_kmol = value
+
+        def get_gas_quantum_kmol(self):
+            return self.amount_kmol
+
+        def get_gas_quantum_kg(self):
+            m = 0
+            for id in self.specie.keys():
+                y = self.get_specie_molar_fraction(id=id)
+                M = self.get_specie_molar_mass_kg_kmol(id=id)
+                m = m + y * M * self.get_gas_quantum_kmol()
+            return m
+
+        def get_specie_quantum_kmol(self, id):
+            return self.get_gas_quantum_kmol() * self.get_specie_molar_fraction(id=id)
+
+        def get_specie_quantum_kg(self, id):
+            return self.get_specie_quantum_kmol(id=id) * self.get_specie_molar_mass_kg_kmol(id=id)
+
+
+    def LiquidStream_to_LiquidBulk(LiquidStreamIn, quantity_kg):
+
+        bulk = LiquidBulk(stream_id=LiquidStreamIn.id, solvent_id=LiquidStreamIn.solvent_id)
+
+        bulk.info = LiquidStreamIn.info
+        bulk.function = LiquidStreamIn.function
+
+        bulk.specie = LiquidStreamIn.specie
+        bulk.rxn_insta = LiquidStreamIn.rxn_insta
+        bulk.rxn_reversible = LiquidStreamIn.rxn_reversible
+        bulk.rxn_irreversible = LiquidStreamIn.rxn_irreversible
+        bulk.vapor_pressure_bara = LiquidStreamIn.vapor_pressure_bara
+
+        bulk.num_of_species = LiquidStreamIn.num_of_species
+        bulk.num_of_rxn_insta = LiquidStreamIn.num_of_rxn_insta
+        bulk.num_of_rxn_reversible = LiquidStreamIn.num_of_rxn_reversible
+        bulk.num_of_rxn_irreversible = LiquidStreamIn.num_of_rxn_irreversible
+        bulk.num_of_vapor_pressure_bara = LiquidStreamIn.num_of_vapor_pressure_bara
+
+        bulk.temp_K = LiquidStreamIn.temp_K
+        bulk.set_solution_quantum_kg(value=quantity_kg)
+
+        bulk.density_kg_m3 = LiquidStreamIn.density_kg_m3
+        bulk.heat_capacity_kJ_kgK = LiquidStreamIn.heat_capacity_kJ_kgK
+        bulk.viscosity_Pas = LiquidStreamIn.viscosity_Pas
+        bulk.thermal_conductivity_kW_mK = LiquidStreamIn.thermal_conductivity_kW_mK
+        bulk.activity_coefficient = LiquidStreamIn.activity_coefficient
+        bulk.diffusivity_m2_s = LiquidStreamIn.diffusivity_m2_s
+        bulk.surface_tension_N_m = LiquidStreamIn.surface_tension_N_m
+
+        return bulk
+
+
+    def LiquidBulk_to_LiquidStream(LiquidBulkIn, flow_kg_h):
+        stream = LiquidStream(stream_id=LiquidBulkIn.id, solvent_id=LiquidBulkIn.solvent_id)
+
+        stream.info = LiquidBulkIn.info
+        stream.function = LiquidBulkIn.function
+
+        stream.specie = LiquidBulkIn.specie
+        stream.rxn_insta = LiquidBulkIn.rxn_insta
+        stream.rxn_reversible = LiquidBulkIn.rxn_reversible
+        stream.rxn_irreversible = LiquidBulkIn.rxn_irreversible
+        stream.vapor_pressure_bara = LiquidBulkIn.vapor_pressure_bara
+
+        stream.num_of_species = LiquidBulkIn.num_of_species
+        stream.num_of_rxn_insta = LiquidBulkIn.num_of_rxn_insta
+        stream.num_of_rxn_reversible = LiquidBulkIn.num_of_rxn_reversible
+        stream.num_of_rxn_irreversible = LiquidBulkIn.num_of_rxn_irreversible
+        stream.num_of_vapor_pressure_bara = LiquidBulkIn.num_of_vapor_pressure_bara
+
+        stream.temp_K = LiquidBulkIn.temp_K
+        stream.set_solution_flow_kg_h(value=flow_kg_h)
+
+        stream.density_kg_m3 = LiquidBulkIn.density_kg_m3
+        stream.heat_capacity_kJ_kgK = LiquidBulkIn.heat_capacity_kJ_kgK
+        stream.viscosity_Pas = LiquidBulkIn.viscosity_Pas
+        stream.thermal_conductivity_kW_mK = LiquidBulkIn.thermal_conductivity_kW_mK
+        stream.activity_coefficient = LiquidBulkIn.activity_coefficient
+        stream.diffusivity_m2_s = LiquidBulkIn.diffusivity_m2_s
+        stream.surface_tension_N_m = LiquidBulkIn.surface_tension_N_m
+
+        return stream
+
+
+    class LiquidBulk(_Liquid):
+
+        def __init__(self, stream_id, solvent_id):
+            super().__init__(stream_id, solvent_id)
+            self.quantum_kg = None
+
+        def set_solution_quantum_kg(self, value):
+            self.quantum_kg = value.astype(np.float64)
+
+        def get_solution_quantum_kg(self):
+            return self.quantum_kg
+
+        def get_solution_quantum_m3(self):
+            return self.get_solution_quantum_kg() / self.get_solution_density_kg_m3()
+
+        def get_solution_quantum_kmol(self):
+            return self.get_solution_molarity_kmol_m3() * self.get_solution_quantum_m3()
+
+        def get_specie_quantum_kg(self, id):
+            return self.get_specie_mass_fraction(id=id) * self.get_solution_quantum_kg()
+
+        def get_specie_quantum_kmol(self, id):
+            return self.get_specie_molarity_kmol_m3(id=id) * self.get_solution_quantum_m3()
+
+
+    def LiquidBulkSum(bulks):
+
+        LiquidBulkOut = deepcopy(streams[0])
+        LiquidBulkOut.temp_K = 0
+        LiquidBulkOut.quantum_kg = 0
+
+        for bulk in bulks:
+            LiquidStreamBulk.quantum_kg = LiquidBulkOut.quantum_kg + np.abs(bulk.quantum_kg)
+
+        for id in bulks[0].specie.keys():
+            m = 0
+            for bulk in bulkss:
+                if id in bulk.specie.keys():
+                    m = m + bulk.get_specie_quantum_kg(id=id)
+            LiquidBulkOut.specie[id]["Mass Fraction"] = m / LiquidBulkOut.quantum_kg
+
+        for bulk in bulks:
+            T = bulk.temp_K
+            r = np.abs(bulk.quantum_kg) / LiquidBulkOut.quantum_kg
+            LiquidBulkOut.temp_K = LiquidBulkOut.temp_K + r * T
+
+        LiquidBulkOut.normalize_mass_fractions()
+        return LiquidBulkOut
+
+
+
 
 
 

@@ -6,5 +6,6 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="wartsila" />
     <orderEntry type="module" module-name="nesset" />
+    <orderEntry type="module" module-name="Source" />
   </component>
 </module>
